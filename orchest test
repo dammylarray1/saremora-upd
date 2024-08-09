@@ -1,54 +1,56 @@
+#!/bin/bash
+
 # Initialize a list of tasks with their statuses
-$tasks = @(
-    @{Name="Task1"; Status="Completed"},
-    @{Name="Task2"; Status="Running"},
-    @{Name="Task3"; Status="NotStarted"},
-    @{Name="Task4"; Status="Completed"}
+declare -A tasks
+tasks=(
+    ["Task1"]="Completed"
+    ["Task2"]="Running"
+    ["Task3"]="NotStarted"
+    ["Task4"]="Completed"
 )
 
 # Initialize the all_completed flag to false
-$all_completed = $false
+all_completed=false
 
 # Start a while loop to check the status of all tasks
-while ($all_completed -eq $false) {
-    Write-Output "Checking task statuses..."
+while [ "$all_completed" = false ]; do
+    echo "Checking task statuses..."
     
     # Assume all tasks are completed initially
-    $all_completed = $true
+    all_completed=true
 
     # Iterate through each task in the list
-    foreach ($task in $tasks) {
-        Write-Output "Task: $($task.Name), Status: $($task.Status)"
+    for task in "${!tasks[@]}"; do
+        status=${tasks[$task]}
+        echo "Task: $task, Status: $status"
         
-        if ($task.Status -eq "Completed") {
-            Write-Output "$($task.Name) has been completed."
-        }
-        elseif ($task.Status -eq "Running") {
-            Write-Output "$($task.Name) is still running."
-            $all_completed = $false
-        }
-        else {
-            Write-Output "$($task.Name) has not started yet."
-            $all_completed = $false
-        }
-    }
+        if [ "$status" = "Completed" ]; then
+            echo "$task has been completed."
+        elif [ "$status" = "Running" ]; then
+            echo "$task is still running."
+            all_completed=false
+        else
+            echo "$task has not started yet."
+            all_completed=false
+        fi
+    done
 
     # If not all tasks are completed, wait and then recheck
-    if ($all_completed -eq $false) {
-        Write-Output "Not all tasks are completed. Checking again in 5 seconds..."
-        Start-Sleep -Seconds 5
+    if [ "$all_completed" = false ]; then
+        echo "Not all tasks are completed. Checking again in 5 seconds..."
+        sleep 5
 
         # Simulate the task progression in the next iteration
         # (You can modify this logic for your testing)
-        foreach ($task in $tasks) {
-            if ($task.Status -eq "Running") {
-                $task.Status = "Completed"
-            } elseif ($task.Status -eq "NotStarted") {
-                $task.Status = "Running"
-            }
-        }
-    }
-}
+        for task in "${!tasks[@]}"; do
+            if [ "${tasks[$task]}" = "Running" ]; then
+                tasks[$task]="Completed"
+            elif [ "${tasks[$task]}" = "NotStarted" ]; then
+                tasks[$task]="Running"
+            fi
+        done
+    fi
+done
 
 # Final message when all tasks are completed
-Write-Output "All tasks have been completed!"
+echo "All tasks have been completed!"
