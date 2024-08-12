@@ -1,135 +1,138 @@
-        echo $USERNAME > ${PARAM_USER_HOME}/username
-        echo $PASSWORD > ${PARAM_USER_HOME}/password
+$USERNAME | Out-File -FilePath "$PARAM_USER_HOME\username" -Encoding ASCII
+$PASSWORD | Out-File -FilePath "$PARAM_USER_HOME\password" -Encoding ASCII
 
-        echo "Setting file permissions"
-        chmod 400 "${PARAM_USER_HOME}/username"
-        chmod 400 "${PARAM_USER_HOME}/password"
+Write-Host "Setting file permissions"
+chmod 400 "$PARAM_USER_HOME/username"
+chmod 400 "$PARAM_USER_HOME/password"
 
-        echo "Credential copied to $PARAM_USER_HOME and permissions set"
+Write-Host "Credential copied to $PARAM_USER_HOME and permissions set"
 
-        git config --global credential.helper store
-        git config --global --add safe.directory /workspace/source
-        git config --global user.name ${GIT_USER}
-        git config --global user.email ${GIT_USER_EMAIL}
-        GIT_TOKEN=$(cat "${PARAM_USER_HOME}/password")
-        git remote set-url origin https://$GIT_USER:$GIT_TOKEN@github.ford.com/GCP-Windows/windows-container-image.git
+git config --global credential.helper store
+git config --global --add safe.directory /workspace/source
+git config --global user.name $GIT_USER
+git config --global user.email $GIT_USER_EMAIL
+$GIT_TOKEN = Get-Content -Path "$PARAM_USER_HOME\password" -Raw
+git remote set-url origin "https://$GIT_USER:$GIT_TOKEN@github.ford.com/GCP-Windows/windows-container-image.git"
 
-        echo "git configured. setting up the folder structures"
+Write-Host "git configured. Setting up the folder structures"
 
-        versionFileName="VERSION"
+$versionFileName = "VERSION"
 
-        increment_version() {
-          local version=$1
-          local major minor patch
+function Increment-Version {
+    param (
+        [string]$version
+    )
+    if ($version -match '^([0-9]+)\.([0-9]+)\.([0-9]+)$') {
+        $major = $matches[1]
+        $minor = $matches[2]
+        $patch = $matches[3]
+    } else {
+        Write-Host "Invalid version format. Setting version to 0.0.1"
+        return "0.0.1"
+    }
 
-          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            major=${BASH_REMATCH[1]}
-            minor=${BASH_REMATCH[2]}
-            patch=${BASH_REMATCH[3]}
-          else
-            echo "invalid version format. Setting version to 0.0.1"
-            echo "0.0.1"
-            return
-          fi
+    $patch++
+    if ($patch -eq 100) {
+        $patch = 0
+        $minor++
+    }
 
-          patch=$((patch + 1))
+    return "$major.$minor.$patch"
+}
 
-          if [ "$patch" -eq 100]; then
-            patch=0
-            minor=$((minor + 1))
-          fi
+foreach ($subfolder in $TEMPLATES) {
+    $versionFilePath = Join-Path $subfolder $versionFileName
 
-          echo "$major.$minor.$patch"
+    if (Test-Path $versionFilePath) {
+        $subFolderName = Split-Path $subfolder -Leaf
+        if ($TEMPLATES_SUBDIR -contains $subFolderName) {
+            Write-Host "`n Running version update for: $subFolderName"
+            $currentVersion = Get-Content -Path $versionFilePath -Raw
+            $newVersion = Increment-Version $currentVersion
+            $newVersion | Set-Content -Path $versionFilePath
+            Write-Host "Updated version file path to version: $newVersion"
         }
+        Start-Sleep -Seconds 10
+    } else {
+        Write-Host "`n Version file not found in $subfolder"
+    }
+}
 
-        for subfolder in ${TEMPLATES}; do
-            versionFilePath="${subfolder}${versionFileName}"
+Write-Host "`n"
+git checkout -b "orchestration-dev1"
+git branch
+git add .
+git commit -m "updated the version file"
+git push -u origin orchestration-dev1
+$GIT_TOKEN | gh auth login --with-token
+gh pr create --title "updated-version" --body "this PR increments the version file to create pull request" --base main --head orchestration-dev1
 
-            if [ -f "$versionFilePath" ]; then
-                subFolderName=$(basename "$subfolder")
-                if echo "${TEMPLATES_SUBDIR}" | grep -q "$subFolderName"; then
-                  echo -e "\n Running version update for: $subFolderName"
-                  currentVersion=$(cat "$versionFilePath")
-                  newVersion=$(increment_version "$currentVersion")
-                  echo "$newVersion" > "$versionFilePath"
-                  echo "Updated version file path to version: $newVersion"
-                fi
-                sleep 10
-            else
-                echo -e "\n Version file not found in $subfolder"
-            fi
-        done
-        echo -e "\n"
-        git checkout -b "orchestration-dev1"
-        git branch
-        git add .
-        git commit -m "updated the version file"
-        git push -u origin orchestration-dev1
-        echo -n "$GIT_TOKEN" | gh auth login --with-token
-        gh pr create --title "updated-version" --body "this PR increments the version file to create pull request" --base main --head orchestration-dev1
+$retry_delay = 120
+$all_succeeded = $false
+$completed_pipelines_pull = @()
 
-        retry_delay=120
-        all_succeeded="False"
-        completed_pipelines_pull=()
+while (-not $all_succeeded) {
+    $all_succeeded = $true
+    foreach ($subfolder in $TEMPLATES) {
+        $versionFilePath = Join-Path $subfolder $versionFileName
 
-        while [ "$all_succeeded" = "False" ]; do
-          all_succeeded="True"
-          for subfolder in ${TEMPLATES}; do
-              versionFilePath="${subfolder}${versionFileName}"
+        if (Test-Path $versionFilePath) {
+            $subFolderName = Split-Path $subfolder -Leaf
+            if ($TEMPLATES_SUBDIR -contains $subFolderName) {
+                Write-Host $subFolderName
+                $subFolderName_pull = "$subFolderName-image-build-pr"
+                $pipeline_run_names = kubectl get pipelinerun -o jsonpath='{.items[*].metadata.name}' | Out-String | 
+                                      ForEach-Object { $_.Trim() -split ' ' } | 
+                                      Where-Object { $_ -like "$subFolderName_pull*" }
 
-              if [ -f "$versionFilePath" ]; then
-                  subFolderName=$(basename "$subfolder")
-                  if echo "${TEMPLATES_SUBDIR}" | grep -q "$subFolderName"; then
-                    echo $subFolderName
-                    subFolderName_pull="${subFolderName}-image-build-pr"
-                    pipeline_run_names=$(kubectl get pipelinerun -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep "^$subFolderName_pull")
+                if (-not $pipeline_run_names) {
+                    Write-Host "The PipelineRun $subFolderName_pull has either succeeded and been deleted or can't be found"
+                    continue
+                }
 
-                    if [ -z "$pipeline_run_names" ]; then
-                      echo "The PipelineRun $subFolderName_pull has either succeeded and been deleted or can't be found"
-                      continue
-                    fi
+                Start-Sleep -Seconds 20
 
-                    sleep 20
-
-                    for pipelinerun in $(echo "$pipeline_run_names"); do
-                      if [[ " ${completed_pipelines_pull[@]} " =~ " ${pipelinerun} " ]]; then
-                        echo "Skipping already completed PipelineRun: $pipelinerun"
+                foreach ($pipelinerun in $pipeline_run_names) {
+                    if ($completed_pipelines_pull -contains $pipelinerun) {
+                        Write-Host "Skipping already completed PipelineRun: $pipelinerun"
                         continue
-                      fi
+                    }
 
-                      echo "Fetching status of PipelineRun: $pipelinerun"
-                      pipeline_run_status=$(kubectl get pipelinerun "$pipelinerun" -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}')
+                    Write-Host "Fetching status of PipelineRun: $pipelinerun"
+                    $pipeline_run_status = kubectl get pipelinerun $pipelinerun -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}'
 
-                      if [ "$pipeline_run_status" == "True" ]; then
-                        echo "PipelineRun succeeded!"
-                        kubectl delete pipelinerun "$pipelinerun"
-                        echo "PipelineRun $pipelinerun has been deleted"
-                        completed_pipelines_pull+=("$pipelinerun")
-                      elif [ "$pipeline_run_status" == "False" ]; then
-                        echo "PipelineRun failed!"
-                        all_succeeded="False"
+                    if ($pipeline_run_status -eq "True") {
+                        Write-Host "PipelineRun succeeded!"
+                        kubectl delete pipelinerun $pipelinerun
+                        Write-Host "PipelineRun $pipelinerun has been deleted"
+                        $completed_pipelines_pull += $pipelinerun
+                    } elseif ($pipeline_run_status -eq "False") {
+                        Write-Host "PipelineRun failed!"
+                        $all_succeeded = $false
                         break
-                      else
-                        echo "PipelineRun is still running..."
-                        all_succeeded="False"
-                      fi
-                    done
-                  fi
-              else
-                  echo -e "\n Version file not found in $subfolder"
-              fi
-          done
-          if [ "$all_succeeded" = "False" ]; then
-            echo "Not all specified pipelines have succeeded. checking again in $retry_delay"
-            sleep $retry_delay
-          else
-            echo "All pipelines have either succeeded or failed"
-          fi
-        done
+                    } else {
+                        Write-Host "PipelineRun is still running..."
+                        $all_succeeded = $false
+                    }
+                }
+            }
+        } else {
+            Write-Host "`n Version file not found in $subfolder"
+        }
+    }
 
-        echo -e "\n Merging the changes"
+    if (-not $all_succeeded) {
+        Write-Host "Not all specified pipelines have succeeded. Checking again in $retry_delay seconds."
+        Start-Sleep -Seconds $retry_delay
+    } else {
+        Write-Host "All pipelines have either succeeded or failed."
+    }
+}
 
-        LATEST_PR=$(gh pr list --repo $(params.url) --json number --limit 1 | grep -oE '[0-9]+')
-        echo "Latest PR Number is: ${LATEST_PR}"
+Write-Host "`n Merging the changes"
 
-        gh pr merge ${LATEST_PR} --admin --merge --delete-branch
+$LATEST_PR = gh pr list --repo $params.url --json number --limit 1 | Select-String -Pattern '[0-9]+' -AllMatches | 
+             ForEach-Object { $_.Matches.Value }
+Write-Host "Latest PR Number is: $LATEST_PR"
+
+gh pr merge $LATEST_PR --admin --merge --delete-branch
