@@ -1,0 +1,43 @@
+        echo $USERNAME > ${PARAM_USER_HOME}/username
+        echo $PASSWORD > ${PARAM_USER_HOME}/password
+
+        echo "Setting file permissions"
+        chmod 400 "${PARAM_USER_HOME}/username"
+        chmod 400 "${PARAM_USER_HOME}/password"
+
+        echo "Credential copied to $PARAM_USER_HOME and permissions set"
+
+        git config --global credential.helper store
+        git config --global --add safe.directory /workspace/source
+        git config --global user.name ${GIT_USER}
+        git config --global user.email ${GIT_USER_EMAIL}
+        GIT_TOKEN=$(cat "${PARAM_USER_HOME}/password")
+        git remote set-url origin https://$GIT_USER:$GIT_TOKEN@github.ford.com/GCP-Windows/windows-container-image.git
+
+        echo "git configured. setting up the folder structures"
+
+        versionFileName="VERSION"
+
+        increment_version() {
+          local version=$1
+          local major minor patch
+
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major=${BASH_REMATCH[1]}
+            minor=${BASH_REMATCH[2]}
+            patch=${BASH_REMATCH[3]}
+          else
+            echo "invalid version format. Setting version to 0.0.1"
+            echo "0.0.1"
+            return
+          fi
+
+          patch=$((patch + 1))
+
+          if [ "$patch" -eq 100]; then
+            patch=0
+            minor=$((minor + 1))
+          fi
+
+          echo "$major.$minor.$patch"
+        }
