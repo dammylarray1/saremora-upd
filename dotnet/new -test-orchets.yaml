@@ -1,0 +1,122 @@
+        versionFileName="VERSION"
+
+        update_version() {
+          local version_file=$1
+
+          local yy=$(date -u +"%y")
+          local dd=$(date -u +"%d")
+          local mm=$(date -u +"%m")
+          local time=$(date -u +"%H%M")
+
+          echo "$yy.$dd.$mm-$time" > $version_file
+        }
+
+        check_pipeline_run_status() {
+          local pipelinerun="$1"
+          local pipeline_run_status
+
+          echo "Fetching status of PipelineRun: $pipelinerun"
+          pipeline_run_status=$(kubectl get pipelinerun "$pipelinerun" -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}')
+
+          if [ "$pipeline_run_status" == "True" ]; then
+            echo "PipelineRun succeeded!"
+            kubectl delete pipelinerun "$pipelinerun"
+            echo "PipelineRun $pipelinerun has been deleted"
+            completed_pipelines_pull+=("$pipelinerun")
+            failed="True"
+          elif [ "$pipeline_run_status" == "False" ]; then
+            echo "PipelineRun failed!"
+            all_succeeded="False"
+            failed="True"
+            return 1
+          else
+            echo "PipelineRun is still running..."
+            all_succeeded="False"
+            failed="False"
+          fi
+          return 0
+        }
+
+        for subfolder in ${TEMPLATES}; do
+            versionFilePath="${subfolder}${versionFileName}"
+
+            if [ -f "$versionFilePath" ]; then
+                subFolderName=$(basename "$subfolder")
+                if echo "${TEMPLATES_SUBDIR}" | grep -q "$subFolderName"; then
+                  echo -e "\n Running version update for: $subFolderName"
+                  update_version "$versionFilePath"
+                  echo "Version updated"
+                fi
+                sleep 10
+            else
+                echo -e "\n Version file not found in $subfolder"
+            fi
+        done
+        echo -e "\n"
+        git checkout -b "orchestration-dev1"
+        git branch
+        git add .
+        git commit -m "updated the version file"
+        git push -u origin orchestration-dev1
+        echo -n "$GIT_TOKEN" | gh auth login --with-token
+        gh pr create --title "updated-version" --body "this PR increments the version file to create pull request" --base main --head orchestration-dev1
+
+        sleep 40
+        echo -e "\n checking PipelineRun status.."
+
+        retry_delay=120
+        all_succeeded="False"
+        failed="False"
+        completed_pipelines_pull=()
+
+        while [ "$all_succeeded" = "False" ]; do
+          all_succeeded="True"
+          failed="False"
+          for subfolder in ${TEMPLATES}; do
+              versionFilePath="${subfolder}${versionFileName}"
+
+              if [ -f "$versionFilePath" ]; then
+                  subFolderName=$(basename "$subfolder")
+                  if echo "${TEMPLATES_SUBDIR}" | grep -q "$subFolderName"; then
+                    echo $subFolderName
+                    subFolderName_pull="${subFolderName}-image-build-pr"
+                    pipeline_run_names=$(kubectl get pipelinerun -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep "^$subFolderName_pull")
+
+                    if [ -z "$pipeline_run_names" ]; then
+                      echo "The PipelineRun $subFolderName_pull has either succeeded and been deleted or can't be found"
+                      continue
+                    fi
+
+                    sleep 20
+
+                    for pipelinerun in $(echo "$pipeline_run_names"); do
+                      if [[ " ${completed_pipelines_pull[@]} " =~ " ${pipelinerun} " ]]; then
+                        echo "Skipping already completed PipelineRun: $pipelinerun"
+                        continue
+                      fi
+
+                      check_pipeline_run_status "$pipelinerun"
+                      if [ $? -ne 0 ]; then
+                        break
+                      fi
+                    done
+                  fi
+              else
+                  echo -e "\n Version file not found in $subfolder"
+              fi
+          done
+
+          if [ "$all_succeeded" = "False" ] && [ "$failed" = "False" ]; then
+            echo "Not all specified pipelines have succeeded. checking again in $retry_delay"
+            sleep $retry_delay
+          else
+            echo "All pipelines have either succeeded or failed"
+          fi
+
+          if [ "$failed" = "True" ]; then
+            echo "Error in pipelinerun. Not all specified pipelines have succeeded"
+            exit 1
+          else
+            echo "All pipelines have either succeeded or failed"
+          fi
+        done
